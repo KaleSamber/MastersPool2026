@@ -722,19 +722,26 @@ function updateTime() {
 }
 
 function findMastersEvent(data) {
+  // Check top-level data.events[] first (ESPN scoreboard API format)
+  var topEvents = data.events || [];
+  for (var e = 0; e < topEvents.length; e++) {
+    var name = (topEvents[e].name || '').toLowerCase();
+    if (name.includes('master') || name.includes('augusta')) return topEvents[e];
+  }
+  // Fallback: nested data.sports[].leagues[].events[]
   var sports = data.sports || [];
   for (var s = 0; s < sports.length; s++) {
     var leagues = sports[s].leagues || [];
     for (var l = 0; l < leagues.length; l++) {
       var events = leagues[l].events || [];
-      for (var e = 0; e < events.length; e++) {
-        var ev = events[e];
-        var name = (ev.name || '').toLowerCase();
-        if (name.includes('master') || name.includes('augusta')) return ev;
+      for (var i = 0; i < events.length; i++) {
+        var evName = (events[i].name || '').toLowerCase();
+        if (evName.includes('master') || evName.includes('augusta')) return events[i];
       }
     }
   }
-  // fallback: return first event if it's a golf event
+  // Last resort: first top-level event or nested event
+  if (topEvents.length) return topEvents[0];
   try { return data.sports[0].leagues[0].events[0]; } catch(ex) { return null; }
 }
 
@@ -771,28 +778,57 @@ function parseESPNCompetitors(event) {
     linescores.forEach(function(ls) {
       var period = parseInt(ls.period || 0) - 1;
       if (period < 0 || period > 3) return;
+      var dv = (ls.displayValue || '').trim();
       var val = ls.value;
-      if (!val || val === '--' || val === '-') return;
+      if ((!dv || dv === '--' || dv === '-') && (!val || val === '--' || val === '-')) return;
+
+      // Try displayValue first: if it's a plain stroke total (e.g. "70"), use it directly
+      var dvInt = parseInt(dv);
+      if (!isNaN(dvInt) && dvInt > 40 && dvInt < 120) {
+        rounds[period] = dvInt;
+        return;
+      }
+
+      // displayValue looks like a to-par string (e.g. "-2", "+3", "E")
+      if (dv === 'E') {
+        rounds[period] = AUGUSTA_PAR;
+        return;
+      }
+      var toParMatch = dv.match(/^([+\-])(\d+)$/);
+      if (toParMatch) {
+        var sign = toParMatch[1] === '-' ? -1 : 1;
+        rounds[period] = AUGUSTA_PAR + sign * parseInt(toParMatch[2]);
+        return;
+      }
+
+      // Fall back to raw value if it's a valid stroke count
       var n = parseInt(val);
       if (!isNaN(n) && n > 40 && n < 120) {
-        // Looks like a stroke count (valid golf round: 40-120)
         rounds[period] = n;
       }
     });
 
-    // Determine current round / thru
-    var thru = comp.status ? (comp.status.thru || 0) : 0;
-    var period = comp.status ? (comp.status.period || 1) : 1;
-    var displayValue = comp.status ? (comp.status.displayValue || '') : '';
+    // Determine current round / thru (comp.status may be absent)
+    var thru = (comp.status && comp.status.thru) ? comp.status.thru : 0;
+    // Infer current period from how many linescores have values
+    var inferredPeriod = 1;
+    for (var ri = 3; ri >= 0; ri--) {
+      if (rounds[ri] !== null) { inferredPeriod = ri + 1; break; }
+    }
+    var period = (comp.status && comp.status.period) ? comp.status.period : inferredPeriod;
+    var displayValue = (comp.status && comp.status.displayValue) ? comp.status.displayValue : '';
 
     // Total to-par for display
     var toPar = comp.score || 'E';
 
-    // Position
+    // Position — try status.position, then sortOrder, then order
     var position = '';
     if (comp.status && comp.status.position) {
-      position = comp.status.position.displayText || '';
-    } else if (comp.order) {
+      position = comp.status.position.displayText || comp.status.position.shortDisplayName || '';
+    }
+    if (!position && comp.sortOrder) {
+      position = 'T' + comp.sortOrder;
+    } else if (!position && comp.order) {
       position = 'T' + comp.order;
     }
 
