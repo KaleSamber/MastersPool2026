@@ -80,9 +80,15 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
 .lb-you{font-size:0.56rem;background:#1a4a2e;color:#f2cc6e;padding:1px 5px;border-radius:8px;margin-left:4px;vertical-align:middle;}
 .lb-score{font-weight:600;color:#1a4a2e;}
 .lb-score.empty{color:#ccc;font-weight:400;}
+.lb-score.live{background:#fff3cd;border-radius:3px;padding:1px 4px;position:relative;}
+.lb-score.live::after{content:'';display:inline-block;width:5px;height:5px;background:#f9a825;border-radius:50%;margin-left:3px;vertical-align:middle;animation:livePulse 1.2s ease-in-out infinite;}
+@keyframes livePulse{0%,100%{opacity:1;}50%{opacity:0.15;}}
 .lb-total{font-weight:700;color:#1a4a2e;font-size:0.82rem;}
 .lb-total.empty{color:#bbb;font-size:0.72rem;font-weight:400;}
 .lb-total.leader{color:#b8860b;font-size:0.88rem;}
+.lb-total.live{background:#fff3cd;border-radius:3px;padding:1px 4px;}
+.pick-score.ps-live{background:#fff3cd;border-radius:4px;color:#856404;font-weight:700;}
+.pick-live-thru{display:block;font-size:0.5rem;color:#856404;margin-top:1px;font-weight:600;}
 .lb-topar{font-size:0.65rem;color:#555;margin-left:3px;}
 .lb-topar.under{color:#1a6e38;font-weight:600;}
 .lb-topar.over{color:#b00;font-weight:600;}
@@ -225,7 +231,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
     <div class="live-dot" id="live-dot"></div>
     <div>
       <div class="live-label" id="live-label">Live via ESPN</div>
-      <div class="live-sub" id="live-sub">Scores auto-update every 2 min</div>
+      <div class="live-sub" id="live-sub">Scores auto-update every 45s</div>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:6px;">
@@ -296,7 +302,7 @@ var CORS_PROXIES = [
   'https://corsproxy.io/?url=',
   'https://api.allorigins.win/raw?url='
 ];
-var REFRESH_MS = 120000;
+var REFRESH_MS = 45000;
 var AUGUSTA_PAR = 72;
 var MC_PENALTY = 8;
 
@@ -524,7 +530,7 @@ function setLiveStatus(state, sub) {
 
 function updateTime() {
   var t = document.getElementById('live-time');
-  if (t) t.textContent = 'Updated ' + new Date().toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'});
+  if (t) t.textContent = 'Updated ' + new Date().toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit',second:'2-digit'});
 }
 
 function findMastersEvent(data) {
@@ -585,29 +591,47 @@ function parseESPNCompetitors(event) {
 
     // Parse round scores from linescores using displayValue (to-par strings).
     // ls.period is 1-indexed; subtract 1 for 0-based rounds array (rounds[0]=R1 ... rounds[3]=R4).
+    // liveRounds[roundNum] = to-par int for ALL rounds with data (including in-progress).
+    // thruRounds[roundNum] = holes completed (0–18).
+    // rounds[period] = AUGUSTA_PAR + toParInt ONLY when holesCompleted === 18 (round finished).
     var rounds = [null, null, null, null];
+    var liveRounds = {};   // roundNum → to-par int (set for all rounds with data, incl. in-progress)
+    var thruRounds = {};   // roundNum → holes completed (0–18)
+
     linescores.forEach(function(ls) {
-      var period = parseInt(ls.period || 0) - 1; // convert to 0-based index
+      var period = parseInt(ls.period || 0) - 1; // 0-based index
       if (period < 0 || period > 3) return;
       var roundNum = period + 1; // 1-based round number
 
-      // Skip rounds that are still in progress (holes < 18) to avoid premature partial scores
-      var holesCompleted = parseInt(ls.value);
-      if (roundNum === currentPeriod && (isNaN(holesCompleted) || holesCompleted < 18)) return;
+      var holesCompleted = parseInt(ls.value) || 0;
+      thruRounds[roundNum] = holesCompleted;
 
+      // Parse displayValue to a to-par integer
       var dv = (ls.displayValue || '').trim();
-      var val = ls.value;
-
-      // displayValue is a plain stroke total (e.g. "70")
+      var toParInt = null;
       var dvInt = parseInt(dv);
-      if (!isNaN(dvInt) && dvInt > 40 && dvInt < 120) { rounds[period] = dvInt; return; }
-      // displayValue is to-par: "E", "-2", "+3"
-      if (dv === 'E') { rounds[period] = AUGUSTA_PAR; return; }
-      var tpm = dv.match(/^([+\-])(\d+)$/);
-      if (tpm) { rounds[period] = AUGUSTA_PAR + (tpm[1] === '-' ? -1 : 1) * parseInt(tpm[2]); return; }
-      // Fall back to raw value if stroke-like
-      var n = parseInt(val);
-      if (!isNaN(n) && n > 40 && n < 120) rounds[period] = n;
+      if (!isNaN(dvInt) && dvInt > 40 && dvInt < 120) {
+        // stroke total → convert to to-par
+        toParInt = dvInt - AUGUSTA_PAR;
+      } else if (dv === 'E') {
+        toParInt = 0;
+      } else {
+        var tpm = dv.match(/^([+\-])(\d+)$/);
+        if (tpm) toParInt = (tpm[1] === '-' ? -1 : 1) * parseInt(tpm[2]);
+      }
+      // Fallback: raw value as stroke total
+      if (toParInt === null) {
+        var n = parseInt(ls.value);
+        if (!isNaN(n) && n > 40 && n < 120) toParInt = n - AUGUSTA_PAR;
+      }
+
+      if (toParInt !== null) {
+        liveRounds[roundNum] = toParInt;
+        // Only record completed-round strokes when all 18 holes are done
+        if (holesCompleted === 18) {
+          rounds[period] = AUGUSTA_PAR + toParInt;
+        }
+      }
     });
 
     // Infer the golfer's completed period from parsed rounds
@@ -644,6 +668,7 @@ function parseESPNCompetitors(event) {
 
     result[poolName] = {
       r1: rounds[0], r2: rounds[1], r3: rounds[2], r4: rounds[3],
+      liveRounds: liveRounds, thruRounds: thruRounds,
       isMC: isMC, isWD: isWD, isDQ: isDQ,
       toPar: espnToParStr, position: position, thru: thru, period: period
     };
@@ -727,7 +752,14 @@ function getGolferScore(poolName, round) {
   if (espn.isWD || espn.isDQ) {
     return espn['r' + round] || penaltyScore;
   }
-  return espn['r' + round] || null;
+  // Completed round: use final stroke total
+  if (espn['r' + round] != null) return espn['r' + round];
+  // In-progress round: use live to-par as partial contribution (only if golfer has teed off)
+  if (espn.liveRounds && espn.liveRounds[round] != null) {
+    var thru = (espn.thruRounds && espn.thruRounds[round]) || 0;
+    if (thru > 0) return AUGUSTA_PAR + espn.liveRounds[round];
+  }
+  return null;
 }
 
 // Bug fix #2: only count golfers with actual scores — don't treat null as par
@@ -818,9 +850,17 @@ function renderLeaderboard() {
   var rLabels = ['R1 Thu','R2 Fri','R3 Sat','R4 Sun'];
   badges.innerHTML = rLabels.map(function(lbl, i) {
     var r = i + 1;
-    var hasR = POOL.some(function(p) { return getParticipantRound(p, r) !== null; });
-    var cls = hasR ? 'rb-chip rb-done' : 'rb-chip rb-upcoming';
-    return '<span class="' + cls + '">' + (hasR ? '\u2705 ' : '') + lbl + '</span>';
+    var anyLive = Object.keys(espnData).some(function(k) {
+      var e = espnData[k]; return e.thruRounds && e.thruRounds[r] > 0 && e.thruRounds[r] < 18;
+    });
+    var anyDone = Object.keys(espnData).some(function(k) {
+      var e = espnData[k]; return e.thruRounds && e.thruRounds[r] === 18;
+    });
+    var cls, prefix;
+    if (anyLive) { cls = 'rb-chip rb-active'; prefix = '\u25cf '; }
+    else if (anyDone) { cls = 'rb-chip rb-done'; prefix = '\u2705 '; }
+    else { cls = 'rb-chip rb-upcoming'; prefix = ''; }
+    return '<span class="' + cls + '">' + prefix + lbl + '</span>';
   }).join('');
 
   var rows = POOL.map(function(p) {
@@ -843,10 +883,19 @@ function renderLeaderboard() {
   statusEl.textContent = 'Live Standings \u00B7 Round ' + activeRound + '/4 \u00B7 Best 3 of 4 scores/round \u00B7 MC/DQ = +8/round \u00B7 Lowest total wins';
 
   var ROUND_PAR = 3 * AUGUSTA_PAR;
-  var sf = function(v) {
+
+  // Detect which rounds are currently live (any golfer mid-round)
+  var liveRoundFlags = [1,2,3,4].map(function(r) {
+    return Object.keys(espnData).some(function(k) {
+      var e = espnData[k];
+      return e.thruRounds && e.thruRounds[r] > 0 && e.thruRounds[r] < 18;
+    });
+  });
+
+  var sf = function(v, isLive) {
     if (v === null) return '<span class="lb-score empty">\u2014</span>';
     var s = toPar(v, ROUND_PAR);
-    var cls = 'lb-score' + (s.charAt(0) === '-' ? ' score-red' : '');
+    var cls = 'lb-score' + (s.charAt(0) === '-' ? ' score-red' : '') + (isLive ? ' live' : '');
     return '<span class="' + cls + '">' + s + '</span>';
   };
 
@@ -859,12 +908,14 @@ function renderLeaderboard() {
     var youBadge = row.isMyTeam ? '<span class="lb-you" onclick="event.stopPropagation()">YOU</span>' : '';
 
     // Total column: to-par only (sort still uses raw totals)
+    var anyRoundLive = liveRoundFlags.some(function(f) { return f; });
     var totalHtml = '';
     if (row.total !== null) {
-      var completedRounds = row.rounds.filter(function(rr) { return rr !== null; }).length;
-      var parBase = completedRounds * AUGUSTA_PAR * 3;
+      // contributingRounds includes live in-progress rounds (getParticipantRound returns non-null for them)
+      var contributingRounds = row.rounds.filter(function(rr) { return rr !== null; }).length;
+      var parBase = contributingRounds * AUGUSTA_PAR * 3;
       var ts = toPar(row.total, parBase);
-      var totalCls = 'lb-total' + (isLeader ? ' leader' : '') + (ts.charAt(0) === '-' ? ' score-red' : '');
+      var totalCls = 'lb-total' + (isLeader ? ' leader' : '') + (ts.charAt(0) === '-' ? ' score-red' : '') + (anyRoundLive ? ' live' : '');
       totalHtml = '<span class="' + totalCls + '">' + ts + '</span>';
     } else {
       totalHtml = '<span class="lb-total empty">\u2014</span>';
@@ -881,10 +932,10 @@ function renderLeaderboard() {
     return '<tr class="' + trCls + '" id="tr-' + slug + '" onclick="toggleExpand(\'' + row.name.replace(/'/g, "\\'") + '\')" style="cursor:pointer">' +
       '<td onclick="event.stopPropagation()"><span class="lb-rank ' + rc + '">' + rank + '</span></td>' +
       '<td class="left"><span class="lb-name">' + row.name + youBadge + '</span></td>' +
-      '<td>' + sf(row.rounds[0]) + '</td>' +
-      '<td>' + sf(row.rounds[1]) + '</td>' +
-      '<td>' + sf(row.rounds[2]) + '</td>' +
-      '<td>' + sf(row.rounds[3]) + '</td>' +
+      '<td>' + sf(row.rounds[0], liveRoundFlags[0]) + '</td>' +
+      '<td>' + sf(row.rounds[1], liveRoundFlags[1]) + '</td>' +
+      '<td>' + sf(row.rounds[2], liveRoundFlags[2]) + '</td>' +
+      '<td>' + sf(row.rounds[3], liveRoundFlags[3]) + '</td>' +
       '<td>' + totalHtml + '</td>' +
       '<td class="td-expand-btn">' + chevron + ' ' + expandLabel + '</td>' +
       '</tr>' +
@@ -982,13 +1033,21 @@ function buildExpandedRow(row) {
     html += '</div>';
 
     // R1–R4 score cells
-    roundScores.forEach(function(s) {
+    roundScores.forEach(function(s, ri) {
+      var rn = ri + 1; // 1-based round number
+      // Live score: round not yet complete but golfer has teed off
+      var isLiveScore = s !== null && espn['r' + rn] == null &&
+        espn.liveRounds && espn.liveRounds[rn] != null &&
+        espn.thruRounds && espn.thruRounds[rn] > 0 && espn.thruRounds[rn] < 18;
       var cellCls = 'pick-score';
       var disp;
       if (s === null) {
         cellCls += ' ps-empty'; disp = '\u2014';
       } else if (s === penaltyScore) {
         cellCls += ' ps-penalty'; disp = toPar(s, AUGUSTA_PAR);
+      } else if (isLiveScore) {
+        cellCls += ' ps-live';
+        disp = toPar(s, AUGUSTA_PAR) + '<span class="pick-live-thru">Thru ' + espn.thruRounds[rn] + '</span>';
       } else {
         disp = toPar(s, AUGUSTA_PAR);
         if (s === bestScore) cellCls += ' ps-best';
@@ -1158,10 +1217,10 @@ function renderMyTeam() {
     html += '</div>';
 
     html += '<div class="mt-card-body">';
-    // Left: live to-par
-    var toPar = espn.toPar || null;
-    var toParCls = 'mt-topar ' + espnToParClass(toPar);
-    var toParDisplay = toPar || '\u2014';
+    // Left: live to-par (renamed to avoid shadowing global toPar() function)
+    var espnGolferToPar = espn.toPar || null;
+    var toParCls = 'mt-topar ' + espnToParClass(espnGolferToPar);
+    var toParDisplay = espnGolferToPar || '\u2014';
     if (!hasSomeScore) { toParCls = 'mt-topar ns'; toParDisplay = 'NS'; }
     html += '<div>';
     html += '<div class="' + toParCls + '">' + toParDisplay + '</div>';
