@@ -762,7 +762,9 @@ function getGolferScore(poolName, round) {
   return null;
 }
 
-// Bug fix #2: only count golfers with actual scores — don't treat null as par
+// Returns { strokes: sum, count: N } for a round — count is 1, 2, or 3 (however many golfers
+// have teed off, capped at 3). Returns null if no golfer on the team has a score yet.
+// The caller must use count * AUGUSTA_PAR as the par base for this round's to-par display.
 function getParticipantRound(participant, round) {
   var scores = [];
   participant.picks.forEach(function(g) {
@@ -771,18 +773,24 @@ function getParticipantRound(participant, round) {
   });
   if (!scores.length) return null;
   scores.sort(function(a, b) { return a.score - b.score; });
-  // Only use best 3 of however many have scored (not forcing 3)
-  var top = scores.slice(0, 3);
-  return top.reduce(function(sum, x) { return sum + x.score; }, 0);
+  var top = scores.slice(0, 3); // best up to 3
+  var sum = top.reduce(function(acc, x) { return acc + x.score; }, 0);
+  return { strokes: sum, count: top.length };
 }
 
+// Returns { strokes, parBase } for the cumulative total — parBase = sum(count * 72) across rounds.
+// Returns null if nothing has scored yet.
 function getParticipantTotal(participant) {
-  var total = 0, has = false;
+  var strokes = 0, parBase = 0, has = false;
   for (var r = 1; r <= 4; r++) {
-    var s = getParticipantRound(participant, r);
-    if (s !== null) { total += s; has = true; }
+    var pr = getParticipantRound(participant, r);
+    if (pr !== null) {
+      strokes += pr.strokes;
+      parBase += pr.count * AUGUSTA_PAR;
+      has = true;
+    }
   }
-  return has ? total : null;
+  return has ? { strokes: strokes, parBase: parBase } : null;
 }
 
 // Returns which golfers are counting (best 3) vs dropped for a given round
@@ -864,16 +872,29 @@ function renderLeaderboard() {
   }).join('');
 
   var rows = POOL.map(function(p) {
-    var rScores = [getParticipantRound(p,1),getParticipantRound(p,2),getParticipantRound(p,3),getParticipantRound(p,4)];
-    var total = getParticipantTotal(p);
-    return { name: p.name, isMyTeam: p.name === myTeamName, picks: p.picks, rounds: rScores, total: total };
+    var perRound = [1,2,3,4].map(function(r) { return getParticipantRound(p, r); });
+    var rStrokes  = perRound.map(function(pr) { return pr ? pr.strokes : null; });
+    var rParBase  = perRound.map(function(pr) { return pr ? pr.count * AUGUSTA_PAR : null; });
+    var tot = getParticipantTotal(p);
+    return {
+      name: p.name,
+      isMyTeam: p.name === myTeamName,
+      picks: p.picks,
+      rounds: rStrokes,           // per-round stroke sums (null if no contribution yet)
+      roundParBase: rParBase,     // per-round par base in strokes (count × 72, null if no contribution)
+      total: tot ? tot.strokes : null,
+      totalParBase: tot ? tot.parBase : 0
+    };
   });
 
+  // Sort by cumulative to-par (strokes − parBase). Teams with no scores sort last.
   rows.sort(function(a, b) {
-    if (a.total === null && b.total === null) return 0;
-    if (a.total === null) return 1;
-    if (b.total === null) return -1;
-    return a.total - b.total;
+    var aPar = a.total === null ? null : a.total - a.totalParBase;
+    var bPar = b.total === null ? null : b.total - b.totalParBase;
+    if (aPar === null && bPar === null) return 0;
+    if (aPar === null) return 1;
+    if (bPar === null) return -1;
+    return aPar - bPar;
   });
 
   var activeRound = 0;
@@ -882,9 +903,7 @@ function renderLeaderboard() {
   }
   statusEl.textContent = 'Live Standings \u00B7 Round ' + activeRound + '/4 \u00B7 Best 3 of 4 scores/round \u00B7 MC/DQ = +8/round \u00B7 Lowest total wins';
 
-  var ROUND_PAR = 3 * AUGUSTA_PAR;
-
-  // Detect which rounds are currently live (any golfer mid-round)
+  // Detect which rounds are currently live (any golfer mid-round across the whole field)
   var liveRoundFlags = [1,2,3,4].map(function(r) {
     return Object.keys(espnData).some(function(k) {
       var e = espnData[k];
@@ -892,9 +911,10 @@ function renderLeaderboard() {
     });
   });
 
-  var sf = function(v, isLive) {
-    if (v === null) return '<span class="lb-score empty">\u2014</span>';
-    var s = toPar(v, ROUND_PAR);
+  // sf(strokes, parBase, isLive): render a round cell with correct per-team par base
+  var sf = function(strokes, parBase, isLive) {
+    if (strokes === null || parBase === null) return '<span class="lb-score empty">\u2014</span>';
+    var s = toPar(strokes, parBase);
     var cls = 'lb-score' + (s.charAt(0) === '-' ? ' score-red' : '') + (isLive ? ' live' : '');
     return '<span class="' + cls + '">' + s + '</span>';
   };
@@ -907,14 +927,11 @@ function renderLeaderboard() {
     var trCls = 'data-row' + (row.isMyTeam ? ' myteam' : '') + (isLeader ? ' leader' : '');
     var youBadge = row.isMyTeam ? '<span class="lb-you" onclick="event.stopPropagation()">YOU</span>' : '';
 
-    // Total column: to-par only (sort still uses raw totals)
+    // Total column: uses row.totalParBase which already accounts for partial-round contributor counts
     var anyRoundLive = liveRoundFlags.some(function(f) { return f; });
     var totalHtml = '';
     if (row.total !== null) {
-      // contributingRounds includes live in-progress rounds (getParticipantRound returns non-null for them)
-      var contributingRounds = row.rounds.filter(function(rr) { return rr !== null; }).length;
-      var parBase = contributingRounds * AUGUSTA_PAR * 3;
-      var ts = toPar(row.total, parBase);
+      var ts = toPar(row.total, row.totalParBase);
       var totalCls = 'lb-total' + (isLeader ? ' leader' : '') + (ts.charAt(0) === '-' ? ' score-red' : '') + (anyRoundLive ? ' live' : '');
       totalHtml = '<span class="' + totalCls + '">' + ts + '</span>';
     } else {
@@ -932,10 +949,10 @@ function renderLeaderboard() {
     return '<tr class="' + trCls + '" id="tr-' + slug + '" onclick="toggleExpand(\'' + row.name.replace(/'/g, "\\'") + '\')" style="cursor:pointer">' +
       '<td onclick="event.stopPropagation()"><span class="lb-rank ' + rc + '">' + rank + '</span></td>' +
       '<td class="left"><span class="lb-name">' + row.name + youBadge + '</span></td>' +
-      '<td>' + sf(row.rounds[0], liveRoundFlags[0]) + '</td>' +
-      '<td>' + sf(row.rounds[1], liveRoundFlags[1]) + '</td>' +
-      '<td>' + sf(row.rounds[2], liveRoundFlags[2]) + '</td>' +
-      '<td>' + sf(row.rounds[3], liveRoundFlags[3]) + '</td>' +
+      '<td>' + sf(row.rounds[0], row.roundParBase[0], liveRoundFlags[0]) + '</td>' +
+      '<td>' + sf(row.rounds[1], row.roundParBase[1], liveRoundFlags[1]) + '</td>' +
+      '<td>' + sf(row.rounds[2], row.roundParBase[2], liveRoundFlags[2]) + '</td>' +
+      '<td>' + sf(row.rounds[3], row.roundParBase[3], liveRoundFlags[3]) + '</td>' +
       '<td>' + totalHtml + '</td>' +
       '<td class="td-expand-btn">' + chevron + ' ' + expandLabel + '</td>' +
       '</tr>' +
@@ -1155,31 +1172,30 @@ function renderMyTeam() {
   var participant = POOL.find(function(p) { return p.name === myTeamName; });
   if (!participant) { saveMyTeam(null); renderTeamSelector(); return; }
 
-  // Build pool standings for rank
+  // Build pool standings for rank — sort by cumulative to-par (strokes − parBase)
   var standings = POOL.map(function(p) {
-    return { name: p.name, total: getParticipantTotal(p) };
+    var tot = getParticipantTotal(p);
+    return { name: p.name, toPar: tot ? tot.strokes - tot.parBase : null };
   }).sort(function(a, b) {
-    if (a.total === null && b.total === null) return 0;
-    if (a.total === null) return 1;
-    if (b.total === null) return -1;
-    return a.total - b.total;
+    if (a.toPar === null && b.toPar === null) return 0;
+    if (a.toPar === null) return 1;
+    if (b.toPar === null) return -1;
+    return a.toPar - b.toPar;
   });
   var myRank = standings.findIndex(function(s) { return s.name === myTeamName; }) + 1;
   var rankSuffix = myRank === 1 ? 'st' : myRank === 2 ? 'nd' : myRank === 3 ? 'rd' : 'th';
 
-  var total = getParticipantTotal(participant);
+  var total = getParticipantTotal(participant); // { strokes, parBase } or null
   var activeRound = 0;
   for (var r = 1; r <= 4; r++) {
     if (POOL.some(function(p) { return getParticipantRound(p, r) !== null; })) activeRound = r;
   }
   var countingInfo = activeRound > 0 ? getCountingGolfers(participant, activeRound) : { counting: {}, dropped: null };
 
-  // Total to-par
+  // Total to-par — use total.parBase which correctly accounts for partial-round contributor counts
   var totalParHtml = '';
   if (total !== null) {
-    var completedRounds = [1,2,3,4].filter(function(r) { return getParticipantRound(participant,r) !== null; }).length;
-    var parBase = completedRounds * AUGUSTA_PAR * 3;
-    var ts = toPar(total, parBase);
+    var ts = toPar(total.strokes, total.parBase);
     var tsColor = ts.charAt(0) === '-' ? '#4ade80' : ts === 'E' ? 'rgba(255,255,255,0.85)' : '#f87171';
     totalParHtml = '<div class="mt-hdr-total"><span class="mt-total-num" style="color:' + tsColor + '">' + ts + '</span><span class="mt-total-lbl" style="margin-left:8px;">Tournament to par</span></div>';
   } else {
@@ -1295,16 +1311,15 @@ function changeTeam() {
 // ── SHARE ──────────────────────────────────────────────────
 function copyStandings() {
   var rows = POOL.map(function(p) {
-    var total = getParticipantTotal(p);
-    var rScores = [getParticipantRound(p,1),getParticipantRound(p,2),getParticipantRound(p,3),getParticipantRound(p,4)];
-    var completedRounds = rScores.filter(function(r) { return r !== null; }).length;
-    var parBase = completedRounds * AUGUSTA_PAR * 3;
-    return { name: p.name, total: total, display: total !== null ? toPar(total, parBase) : '\u2014' };
+    var tot = getParticipantTotal(p); // { strokes, parBase } or null
+    var display = tot !== null ? toPar(tot.strokes, tot.parBase) : '\u2014';
+    var sortKey = tot !== null ? tot.strokes - tot.parBase : null;
+    return { name: p.name, sortKey: sortKey, display: display };
   });
   rows.sort(function(a, b) {
-    if (a.total===null&&b.total===null) return 0;
-    if (a.total===null) return 1; if (b.total===null) return -1;
-    return a.total - b.total;
+    if (a.sortKey===null&&b.sortKey===null) return 0;
+    if (a.sortKey===null) return 1; if (b.sortKey===null) return -1;
+    return a.sortKey - b.sortKey;
   });
   var medals = ['\uD83E\uDD47','\uD83E\uDD48','\uD83E\uDD49'];
   var lines = ['\u26F3 Masters 2026 Pool Standings\n'];
