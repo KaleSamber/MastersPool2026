@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Masters 2026 Pool</title>
 <meta name="description" content="Live Masters 2026 pool tracker - auto-updated from ESPN">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -231,7 +234,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
     <div class="live-dot" id="live-dot"></div>
     <div>
       <div class="live-label" id="live-label">Live via ESPN</div>
-      <div class="live-sub" id="live-sub">Scores auto-update every 45s</div>
+      <div class="live-sub" id="live-sub">Scores auto-update every 45s &middot; <span id="build-tag">loading...</span></div>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:6px;">
@@ -310,10 +313,23 @@ var MC_PENALTY = 8;
 // 72 vs par 72 -> "E"; 69 vs 72 -> "-3"; 74 vs 72 -> "+2"
 function toPar(strokes, parBase) {
   if (strokes == null || isNaN(strokes)) return '\u2014';
+  // Safety net: parBase of 0 with a stroke-like value is always a bug
+  if ((parBase === 0 || parBase == null) && strokes > 40) {
+    console.warn('[toPar] suspicious call — parBase=' + parBase + ' strokes=' + strokes);
+  }
   var diff = strokes - parBase;
   if (diff === 0) return 'E';
   return (diff > 0 ? '+' : '') + diff;
 }
+
+var BUILD_TAG = (function() {
+  var d = new Date();
+  return 'v' + d.getFullYear()
+    + String(d.getMonth()+1).padStart(2,'0')
+    + String(d.getDate()).padStart(2,'0')
+    + String(d.getHours()).padStart(2,'0')
+    + String(d.getMinutes()).padStart(2,'0');
+})();
 
 // Wrap toPar result in a span with .score-red if under par (starts with '-')
 function toParHtml(strokes, parBase) {
@@ -1355,6 +1371,10 @@ function manualRefresh() { fetchESPN(); }
 
 // ── INIT ───────────────────────────────────────────────────
 (function init() {
+  // Stamp build tag in live bar so we can confirm which version is deployed
+  var btEl = document.getElementById('build-tag');
+  if (btEl) btEl.textContent = BUILD_TAG;
+
   renderPreTournament();
   renderDraft();
   renderMyTeam();
