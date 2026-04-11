@@ -94,6 +94,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
 .expand-btn{background:none;border:none;font-size:0.6rem;color:#1a4a2e;cursor:pointer;text-decoration:underline;padding:3px 10px;}
 .btn-copy-scores{display:block;width:calc(100% - 24px);margin:10px 12px 14px;background:#1a4a2e;color:#f2cc6e;border:none;padding:10px;border-radius:10px;font-family:'Cinzel',serif;font-size:0.78rem;letter-spacing:1px;cursor:pointer;font-weight:700;}
 .gc-thru{font-size:0.56rem;color:#888;margin-top:2px;}
+.score-red{color:#c0392b;font-weight:700;}
 
 /* DRAFT */
 #draft-page{padding:12px;background:var(--bg);}
@@ -271,6 +272,23 @@ var CORS_PROXIES = [
 var REFRESH_MS = 120000;
 var AUGUSTA_PAR = 72;
 var MC_PENALTY = 8;
+
+// Convert a stroke total to golf to-par notation relative to a par base.
+// 72 vs par 72 -> "E"; 69 vs 72 -> "-3"; 74 vs 72 -> "+2"
+function toPar(strokes, parBase) {
+  if (strokes == null || isNaN(strokes)) return '\u2014';
+  var diff = strokes - parBase;
+  if (diff === 0) return 'E';
+  return (diff > 0 ? '+' : '') + diff;
+}
+
+// Wrap toPar result in a span with .score-red if under par (starts with '-')
+function toParHtml(strokes, parBase) {
+  var s = toPar(strokes, parBase);
+  if (s === '\u2014') return '<span style="color:#ccc">\u2014</span>';
+  return s.charAt(0) === '-' ? '<span class="score-red">' + s + '</span>' : s;
+}
+
 var espnData = {};
 var expandedRows = {};
 
@@ -711,35 +729,11 @@ function hasAnyScores() {
 }
 
 // ── TO-PAR HELPERS ────────────────────────────────────────
-function toParStr(strokes) {
-  if (strokes === null || strokes === undefined) return null;
-  var v = strokes - AUGUSTA_PAR;
-  if (v === 0) return 'E';
-  return v > 0 ? '+' + v : String(v);
-}
-
-function toParClass(strokes) {
-  if (strokes === null) return 'even';
-  var v = strokes - AUGUSTA_PAR;
-  return v < 0 ? 'under' : v > 0 ? 'over' : 'even';
-}
-
-function toParStrFromTotal(total, rounds) {
-  // total = sum of best-3-of-4 round stroke totals; par for completed rounds
-  if (total === null) return null;
-  var completedRounds = rounds.filter(function(r) { return r !== null; }).length;
-  var par = completedRounds * AUGUSTA_PAR * (3/4); // rough: each round contributes ~3 golfers at par each
-  // simpler: just show raw total and let the total-to-par use actual par * rounds
-  var parBase = completedRounds * AUGUSTA_PAR * 3; // 3 golfers per round at par
-  var v = total - parBase;
-  if (v === 0) return 'E';
-  return v > 0 ? '+' + v : String(v);
-}
-
-function espnToParClass(toParStr) {
-  if (!toParStr || toParStr === 'E') return 'even';
-  if (toParStr.startsWith('-')) return 'under';
-  if (toParStr.startsWith('+')) return 'over';
+// espnToParClass: classify an ESPN-provided to-par string (e.g. "-3", "+2", "E")
+function espnToParClass(tp) {
+  if (!tp || tp === 'E') return 'even';
+  if (tp.charAt(0) === '-') return 'under';
+  if (tp.charAt(0) === '+') return 'over';
   return 'even';
 }
 
@@ -797,8 +791,12 @@ function renderLeaderboard() {
   }
   statusEl.textContent = 'Live Standings \u00B7 Round ' + activeRound + '/4 \u00B7 Best 3 of 4 scores/round \u00B7 MC/DQ = +8/round \u00B7 Lowest total wins';
 
+  var ROUND_PAR = 3 * AUGUSTA_PAR;
   var sf = function(v) {
-    return v === null ? '<span class="lb-score empty">\u2014</span>' : '<span class="lb-score">' + v + '</span>';
+    if (v === null) return '<span class="lb-score empty">\u2014</span>';
+    var s = toPar(v, ROUND_PAR);
+    var cls = 'lb-score' + (s.charAt(0) === '-' ? ' score-red' : '');
+    return '<span class="' + cls + '">' + s + '</span>';
   };
 
   var tableRows = rows.map(function(row, i) {
@@ -808,15 +806,14 @@ function renderLeaderboard() {
     var trCls = (row.isMyTeam ? 'myteam' : '') + (isLeader ? ' leader' : '');
     var youBadge = row.isMyTeam ? '<span class="lb-you">YOU</span>' : '';
 
-    // To-par for total
+    // Total column: show to-par only (sort order unchanged — raw totals used above)
     var totalHtml = '';
     if (row.total !== null) {
-      var completedRounds = row.rounds.filter(function(r) { return r !== null; }).length;
+      var completedRounds = row.rounds.filter(function(rr) { return rr !== null; }).length;
       var parBase = completedRounds * AUGUSTA_PAR * 3;
-      var diff = row.total - parBase;
-      var parStr = diff === 0 ? 'E' : (diff > 0 ? '+' + diff : String(diff));
-      var parCls = diff < 0 ? 'under' : diff > 0 ? 'over' : '';
-      totalHtml = '<span class="lb-total' + (isLeader ? ' leader' : '') + '">' + row.total + '</span><span class="lb-topar ' + parCls + '">(' + parStr + ')</span>';
+      var ts = toPar(row.total, parBase);
+      var totalCls = 'lb-total' + (isLeader ? ' leader' : '') + (ts.charAt(0) === '-' ? ' score-red' : '');
+      totalHtml = '<span class="' + totalCls + '">' + ts + '</span>';
     } else {
       totalHtml = '<span class="lb-total empty">\u2014</span>';
     }
@@ -873,9 +870,12 @@ function buildExpandedRow(row) {
     ['R1','R2','R3','R4'].forEach(function(lbl, i) {
       var s = roundScores[i];
       var cls = 'gc-round';
-      if (s === null) { cls += ' mc'; }
-      else if (s === penaltyScore) { cls += ' worst'; }
-      html += '<span class="' + cls + '">' + lbl + ':' + (s !== null ? s : '\u2014') + '</span>';
+      var dispStr;
+      if (s === null) { cls += ' mc'; dispStr = '\u2014'; }
+      else if (s === penaltyScore) { cls += ' worst'; dispStr = toPar(s, AUGUSTA_PAR); }
+      else { dispStr = toPar(s, AUGUSTA_PAR); }
+      var colorAttr = (s !== null && s < AUGUSTA_PAR) ? ' style="color:#c0392b"' : '';
+      html += '<span class="' + cls + '"' + colorAttr + '>' + lbl + ':' + dispStr + '</span>';
     });
     html += '</div>';
 
@@ -976,10 +976,9 @@ function renderMyTeam() {
   if (total !== null) {
     var completedRounds = [1,2,3,4].filter(function(r) { return getParticipantRound(participant,r) !== null; }).length;
     var parBase = completedRounds * AUGUSTA_PAR * 3;
-    var diff = total - parBase;
-    var parStr = diff === 0 ? 'E' : (diff > 0 ? '+' + diff : String(diff));
-    var parCls = diff < 0 ? 'under' : diff > 0 ? 'over' : 'even';
-    totalParHtml = '<div class="mt-hdr-total"><span class="mt-total-num">' + total + '</span><span class="mt-total-par ' + parCls + '">(' + parStr + ')</span><span class="mt-total-lbl" style="margin-left:6px;">Total Strokes</span></div>';
+    var ts = toPar(total, parBase);
+    var tsColor = ts.charAt(0) === '-' ? '#4ade80' : ts === 'E' ? 'rgba(255,255,255,0.85)' : '#f87171';
+    totalParHtml = '<div class="mt-hdr-total"><span class="mt-total-num" style="color:' + tsColor + '">' + ts + '</span><span class="mt-total-lbl" style="margin-left:8px;">Tournament to par</span></div>';
   } else {
     totalParHtml = '<div class="mt-hdr-total" style="font-size:0.65rem;color:rgba(255,255,255,0.5);margin-top:6px;">No scores yet &mdash; Round 1 in progress</div>';
   }
@@ -1028,8 +1027,14 @@ function renderMyTeam() {
     [1,2,3,4].forEach(function(r) {
       var s = getGolferScore(g, r);
       var rCls = 'mt-r';
-      if (s !== null) rCls += s === penaltyScore ? ' pen' : ' has';
-      html += '<span class="' + rCls + '">R' + r + ':' + (s !== null ? s : '\u2014') + '</span>';
+      var dispStr;
+      if (s !== null) {
+        rCls += s === penaltyScore ? ' pen' : ' has';
+        dispStr = toPar(s, AUGUSTA_PAR);
+      } else {
+        dispStr = '\u2014';
+      }
+      html += '<span class="' + rCls + '">R' + r + ':' + dispStr + '</span>';
     });
     html += '</div>';
     html += '</div>';
@@ -1086,7 +1091,13 @@ function changeTeam() {
 
 // ── SHARE ──────────────────────────────────────────────────
 function copyStandings() {
-  var rows = POOL.map(function(p) { return { name: p.name, total: getParticipantTotal(p) }; });
+  var rows = POOL.map(function(p) {
+    var total = getParticipantTotal(p);
+    var rScores = [getParticipantRound(p,1),getParticipantRound(p,2),getParticipantRound(p,3),getParticipantRound(p,4)];
+    var completedRounds = rScores.filter(function(r) { return r !== null; }).length;
+    var parBase = completedRounds * AUGUSTA_PAR * 3;
+    return { name: p.name, total: total, display: total !== null ? toPar(total, parBase) : '\u2014' };
+  });
   rows.sort(function(a, b) {
     if (a.total===null&&b.total===null) return 0;
     if (a.total===null) return 1; if (b.total===null) return -1;
@@ -1095,7 +1106,7 @@ function copyStandings() {
   var medals = ['\uD83E\uDD47','\uD83E\uDD48','\uD83E\uDD49'];
   var lines = ['\u26F3 Masters 2026 Pool Standings\n'];
   rows.forEach(function(r, i) {
-    lines.push((i<3?medals[i]:(i+1)+'.') + ' ' + r.name + ' \u2014 ' + (r.total!==null?r.total:'\u2014'));
+    lines.push((i<3?medals[i]:(i+1)+'.') + ' ' + r.name + ' \u2014 ' + r.display);
   });
   lines.push('\nTop 3 of 4 golfer scores/round \u2022 Lowest total wins');
   document.getElementById('share-text').textContent = lines.join('\n');
