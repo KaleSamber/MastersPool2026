@@ -65,9 +65,15 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
 .lb-table th.left{text-align:left;padding-left:10px;}
 .lb-table td{padding:8px 6px;border-bottom:1px solid #e8e8e8;text-align:center;background:#fff;color:#111;vertical-align:middle;}
 .lb-table td.left{text-align:left;padding-left:10px;}
-.lb-table tr:nth-child(even) td{background:#f8f8f8;}
-.lb-table tr.myteam td{background:#e8f5ec;}
-.lb-table tr.leader td{background:#fffde7;}
+.lb-table tr.data-row:nth-child(4n+1) td,.lb-table tr.data-row:nth-child(4n+3) td{background:#f8f8f8;}
+.lb-table tr.data-row td{background:#fff;}
+.lb-table tr.data-row.myteam td{background:#e8f5ec;}
+.lb-table tr.data-row.leader td{background:#fffde7;}
+.expand-row td{padding:0!important;border:none!important;background:#fff!important;}
+.expand-row.hidden{display:none;}
+.td-expand-btn{font-size:0.6rem;color:#1a4a2e;white-space:nowrap;cursor:pointer;padding-right:8px!important;text-align:right!important;}
+.td-expand-btn:hover{text-decoration:underline;}
+.th-picks{width:80px;}
 .lb-rank{font-family:'Cinzel',serif;font-weight:700;font-size:0.78rem;color:#111;}
 .lb-rank.p1{color:#b8860b;}.lb-rank.p2{color:#777;}.lb-rank.p3{color:#8b4513;}
 .lb-name{font-weight:700;font-size:0.8rem;color:#111;}
@@ -80,7 +86,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
 .lb-topar{font-size:0.65rem;color:#555;margin-left:3px;}
 .lb-topar.under{color:#1a6e38;font-weight:600;}
 .lb-topar.over{color:#b00;font-weight:600;}
-.expand-btn{background:none;border:none;font-size:0.6rem;color:#1a4a2e;cursor:pointer;text-decoration:underline;padding:3px 10px;}
+/* .expand-btn kept for legacy; replaced by td-expand-btn inline label */
 .btn-copy-scores{display:block;width:calc(100% - 24px);margin:10px 12px 14px;background:#1a4a2e;color:#f2cc6e;border:none;padding:10px;border-radius:10px;font-family:'Cinzel',serif;font-size:0.78rem;letter-spacing:1px;cursor:pointer;font-weight:700;}
 .score-red{color:#c0392b;font-weight:700;}
 
@@ -308,6 +314,13 @@ function toParHtml(strokes, parBase) {
   var s = toPar(strokes, parBase);
   if (s === '\u2014') return '<span style="color:#ccc">\u2014</span>';
   return s.charAt(0) === '-' ? '<span class="score-red">' + s + '</span>' : s;
+}
+
+var DEBUG_SCORES = false; // set true in devtools to log parsed rounds per golfer
+
+// Produce a safe DOM id slug from a participant name (e.g. "Min Woo" -> "min-woo")
+function slugify(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 var espnData = {};
@@ -555,52 +568,69 @@ function parseESPNCompetitors(event) {
     var isWD = statusType.includes('WD') || statusType.includes('WITHDRAWN') || scoreStr === 'WD';
     var isDQ = statusType.includes('DQ') || statusType.includes('DISQUALIF') || scoreStr === 'DQ';
 
-    // Parse round scores from linescores using displayValue (to-par strings)
-    var rounds = [null, null, null, null];
+    // Determine the current (possibly in-progress) round period BEFORE parsing scores.
+    // Use comp.status.period if available; otherwise find the latest linescore with value>=18.
     var linescores = comp.linescores || [];
+    var statusPeriod = (comp.status && comp.status.period) ? comp.status.period : 0;
+    var currentPeriod = statusPeriod;
+    if (!currentPeriod) {
+      // Infer from linescores: latest period where holes completed >= 18
+      linescores.forEach(function(ls) {
+        var p = parseInt(ls.period || 0);
+        var v = parseInt(ls.value);
+        if (p >= 1 && p <= 4 && !isNaN(v) && v >= 18) currentPeriod = Math.max(currentPeriod, p);
+      });
+      currentPeriod = currentPeriod || 1;
+    }
+
+    // Parse round scores from linescores using displayValue (to-par strings).
+    // ls.period is 1-indexed; subtract 1 for 0-based rounds array (rounds[0]=R1 ... rounds[3]=R4).
+    var rounds = [null, null, null, null];
     linescores.forEach(function(ls) {
-      var period = parseInt(ls.period || 0) - 1;
+      var period = parseInt(ls.period || 0) - 1; // convert to 0-based index
       if (period < 0 || period > 3) return;
+      var roundNum = period + 1; // 1-based round number
+
+      // Skip rounds that are still in progress (holes < 18) to avoid premature partial scores
+      var holesCompleted = parseInt(ls.value);
+      if (roundNum === currentPeriod && (isNaN(holesCompleted) || holesCompleted < 18)) return;
+
       var dv = (ls.displayValue || '').trim();
       var val = ls.value;
 
       // displayValue is a plain stroke total (e.g. "70")
       var dvInt = parseInt(dv);
-      if (!isNaN(dvInt) && dvInt > 40 && dvInt < 120) {
-        rounds[period] = dvInt;
-        return;
-      }
+      if (!isNaN(dvInt) && dvInt > 40 && dvInt < 120) { rounds[period] = dvInt; return; }
       // displayValue is to-par: "E", "-2", "+3"
       if (dv === 'E') { rounds[period] = AUGUSTA_PAR; return; }
       var tpm = dv.match(/^([+\-])(\d+)$/);
-      if (tpm) {
-        rounds[period] = AUGUSTA_PAR + (tpm[1] === '-' ? -1 : 1) * parseInt(tpm[2]);
-        return;
-      }
+      if (tpm) { rounds[period] = AUGUSTA_PAR + (tpm[1] === '-' ? -1 : 1) * parseInt(tpm[2]); return; }
       // Fall back to raw value if stroke-like
       var n = parseInt(val);
       if (!isNaN(n) && n > 40 && n < 120) rounds[period] = n;
     });
 
-    // Infer period from linescores
+    // Infer the golfer's completed period from parsed rounds
     var inferredPeriod = 1;
     for (var ri = 3; ri >= 0; ri--) {
       if (rounds[ri] !== null) { inferredPeriod = ri + 1; break; }
     }
-    var period = (comp.status && comp.status.period) ? comp.status.period : inferredPeriod;
+    var period = currentPeriod || inferredPeriod;
 
-    // Thru: for current round, check linescore value (holes completed)
+    // Thru: holes completed in current round
     var thru = 0;
-    if (linescores.length >= inferredPeriod) {
-      var curLS = linescores[inferredPeriod - 1];
-      if (curLS) {
-        var tv = parseInt(curLS.value);
-        if (!isNaN(tv) && tv >= 0 && tv <= 18) thru = tv;
-      }
+    var curLS = linescores[currentPeriod - 1];
+    if (curLS) {
+      var tv = parseInt(curLS.value);
+      if (!isNaN(tv) && tv >= 0 && tv <= 18) thru = tv;
     }
 
-    // Total to-par display
-    var toPar = comp.score || 'E';
+    if (DEBUG_SCORES) {
+      console.log('[SCORES]', poolName, { rounds: rounds, currentPeriod: currentPeriod, thru: thru });
+    }
+
+    // Total to-par string from ESPN (e.g. "-5", "+2", "E") — renamed to avoid shadowing toPar()
+    var espnToParStr = comp.score || 'E';
 
     // Position: sortOrder is leaderboard position integer
     var position = '';
@@ -615,7 +645,7 @@ function parseESPNCompetitors(event) {
     result[poolName] = {
       r1: rounds[0], r2: rounds[1], r3: rounds[2], r4: rounds[3],
       isMC: isMC, isWD: isWD, isDQ: isDQ,
-      toPar: toPar, position: position, thru: thru, period: period
+      toPar: espnToParStr, position: position, thru: thru, period: period
     };
   });
   return result;
@@ -824,10 +854,11 @@ function renderLeaderboard() {
     var rank = i + 1;
     var rc = rank===1?'p1':rank===2?'p2':rank===3?'p3':'';
     var isLeader = rank === 1 && row.total !== null;
-    var trCls = (row.isMyTeam ? 'myteam' : '') + (isLeader ? ' leader' : '');
-    var youBadge = row.isMyTeam ? '<span class="lb-you">YOU</span>' : '';
+    var slug = slugify(row.name);
+    var trCls = 'data-row' + (row.isMyTeam ? ' myteam' : '') + (isLeader ? ' leader' : '');
+    var youBadge = row.isMyTeam ? '<span class="lb-you" onclick="event.stopPropagation()">YOU</span>' : '';
 
-    // Total column: show to-par only (sort order unchanged — raw totals used above)
+    // Total column: to-par only (sort still uses raw totals)
     var totalHtml = '';
     if (row.total !== null) {
       var completedRounds = row.rounds.filter(function(rr) { return rr !== null; }).length;
@@ -840,24 +871,29 @@ function renderLeaderboard() {
     }
 
     var isExpanded = !!expandedRows[row.name];
-    var expandedContent = isExpanded ? buildExpandedRow(row) : '';
+    var chevron = isExpanded ? '\u25b2' : '\u25bc';
+    var expandLabel = (isExpanded ? 'Hide ' : 'See ') + row.name + '\u2019s picks';
 
-    return '<tr class="' + trCls.trim() + '" id="tr-' + row.name + '">' +
-      '<td><span class="lb-rank ' + rc + '">' + rank + '</span></td>' +
+    // Always render the expand-row; hidden via CSS class when collapsed
+    var expandContent = buildExpandedRow(row);
+    var expandRowHidden = isExpanded ? '' : ' hidden';
+
+    return '<tr class="' + trCls + '" id="tr-' + slug + '" onclick="toggleExpand(\'' + row.name.replace(/'/g, "\\'") + '\')" style="cursor:pointer">' +
+      '<td onclick="event.stopPropagation()"><span class="lb-rank ' + rc + '">' + rank + '</span></td>' +
       '<td class="left"><span class="lb-name">' + row.name + youBadge + '</span></td>' +
       '<td>' + sf(row.rounds[0]) + '</td>' +
       '<td>' + sf(row.rounds[1]) + '</td>' +
       '<td>' + sf(row.rounds[2]) + '</td>' +
       '<td>' + sf(row.rounds[3]) + '</td>' +
       '<td>' + totalHtml + '</td>' +
+      '<td class="td-expand-btn">' + chevron + ' ' + expandLabel + '</td>' +
       '</tr>' +
-      '<tr><td colspan="7" style="padding:0!important;background:#fff!important;border:none!important;">' +
-      '<button class="expand-btn" onclick="toggleExpand(\'' + row.name + '\')">' + (isExpanded ? '\u25b2 Hide picks' : '\u25bc See picks') + '</button>' +
-      expandedContent +
-      '</td></tr>';
+      '<tr id="exp-' + slug + '" class="expand-row' + expandRowHidden + '">' +
+      '<td colspan="8">' + expandContent + '</td>' +
+      '</tr>';
   }).join('');
 
-  content.innerHTML = '<div class="lb-table-wrap"><table class="lb-table"><thead><tr><th>#</th><th class="left">Player</th><th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>Total</th></tr></thead><tbody>' + tableRows + '</tbody></table></div>';
+  content.innerHTML = '<div class="lb-table-wrap"><table class="lb-table"><thead><tr><th>#</th><th class="left">Player</th><th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>Total</th><th class="th-picks"></th></tr></thead><tbody>' + tableRows + '</tbody></table></div>';
 }
 
 function buildExpandedRow(row) {
@@ -875,7 +911,12 @@ function buildExpandedRow(row) {
 
   var html = '<div class="picks-expand-block">';
 
-  // Header row
+  // Team name banner — belt-and-suspenders ownership label
+  html += '<div style="background:#1a4a2e;color:#f2cc6e;font-family:\'Cinzel\',serif;font-size:0.72rem;font-weight:700;letter-spacing:2px;padding:7px 14px;">' +
+    row.name.toUpperCase() + '\u2019S TEAM' +
+    '</div>';
+
+  // Column header strip
   html += '<div class="picks-header-row">';
   html += '<span>Player</span><span>R1</span><span>R2</span><span>R3</span><span>R4</span><span>Tot</span><span style="text-align:right">Pos / Thru</span>';
   html += '</div>';
@@ -970,12 +1011,40 @@ function buildExpandedRow(row) {
 }
 
 function toggleExpand(name) {
-  expandedRows[name] = !expandedRows[name];
-  renderLeaderboard();
-  setTimeout(function() {
-    var el = document.getElementById('tr-' + name);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, 50);
+  var wasExpanded = !!expandedRows[name];
+
+  // Collapse all currently open rows first (only one open at a time)
+  Object.keys(expandedRows).forEach(function(n) {
+    if (expandedRows[n]) {
+      expandedRows[n] = false;
+      var expTr = document.getElementById('exp-' + slugify(n));
+      if (expTr) expTr.classList.add('hidden');
+      // Update chevron label on data row
+      var dataTr = document.getElementById('tr-' + slugify(n));
+      if (dataTr) {
+        var btn = dataTr.querySelector('.td-expand-btn');
+        if (btn) btn.textContent = '\u25bc See ' + n + '\u2019s picks';
+      }
+    }
+  });
+
+  // If it wasn't expanded, open it now
+  if (!wasExpanded) {
+    expandedRows[name] = true;
+    var slug = slugify(name);
+    var expTr = document.getElementById('exp-' + slug);
+    if (expTr) expTr.classList.remove('hidden');
+    // Update chevron label
+    var dataTr = document.getElementById('tr-' + slug);
+    if (dataTr) {
+      var btn = dataTr.querySelector('.td-expand-btn');
+      if (btn) btn.textContent = '\u25b2 Hide ' + name + '\u2019s picks';
+    }
+    setTimeout(function() {
+      var tr = document.getElementById('tr-' + slug);
+      if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 50);
+  }
 }
 
 // ── RENDER DRAFT ───────────────────────────────────────────
