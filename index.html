@@ -80,21 +80,42 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);max-w
 .lb-topar{font-size:0.65rem;color:#555;margin-left:3px;}
 .lb-topar.under{color:#1a6e38;font-weight:600;}
 .lb-topar.over{color:#b00;font-weight:600;}
-.golfer-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:4px;}
-.golfer-card{background:#fff;border:1px solid #ddd;border-radius:7px;padding:6px 8px;}
-.golfer-card.counting{border-color:#1a4a2e;background:#f0fdf4;}
-.golfer-card.dropped{opacity:0.45;border-style:dashed;}
-.golfer-card.mc{opacity:0.4;border-style:dashed;}
-.gc-name{font-size:0.65rem;font-weight:700;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.gc-scores{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap;}
-.gc-round{font-size:0.6rem;padding:1px 5px;border-radius:4px;font-weight:600;background:#f0f0f0;color:#555;}
-.gc-round.best{background:#d1e7dd;color:#0a4a2e;}
-.gc-round.worst{background:#fde8e8;color:#900;text-decoration:line-through;opacity:0.6;}
-.gc-round.mc{background:#f5f5f5;color:#aaa;}
 .expand-btn{background:none;border:none;font-size:0.6rem;color:#1a4a2e;cursor:pointer;text-decoration:underline;padding:3px 10px;}
 .btn-copy-scores{display:block;width:calc(100% - 24px);margin:10px 12px 14px;background:#1a4a2e;color:#f2cc6e;border:none;padding:10px;border-radius:10px;font-family:'Cinzel',serif;font-size:0.78rem;letter-spacing:1px;cursor:pointer;font-weight:700;}
-.gc-thru{font-size:0.56rem;color:#888;margin-top:2px;}
 .score-red{color:#c0392b;font-weight:700;}
+
+/* ── EXPANDED PICKS ─────────────────────────────────── */
+.picks-expand-block{background:#fafafa;padding:14px;animation:fadeIn 150ms ease;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+.picks-header-row{display:grid;grid-template-columns:1fr 42px 42px 42px 42px 52px 90px;gap:0;padding:0 12px 5px;border-bottom:1px solid #e0e0e0;margin-bottom:4px;}
+.picks-header-row span{font-size:0.55rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#999;text-align:center;}
+.picks-header-row span:first-child{text-align:left;}
+.pick-row{display:grid;grid-template-columns:1fr 42px 42px 42px 42px 52px 90px;align-items:center;gap:0;padding:10px 12px;border-left:4px solid transparent;border-radius:0;margin-bottom:6px;background:#fff;border-bottom:1px solid #f0f0f0;transition:opacity 0.15s;}
+.pick-row:last-child{margin-bottom:0;border-bottom:none;}
+.pick-row.pr-counting{border-left-color:#1a4a2e;background:#fff;}
+.pick-row.pr-dropped{border-left-color:#ccc;opacity:0.55;}
+.pick-row.pr-mc{border-left-color:#c0392b;opacity:0.5;}
+.pick-name-cell{display:flex;align-items:center;gap:6px;padding-right:8px;}
+.pick-full-name{font-size:0.88rem;font-weight:600;color:#111;line-height:1.2;}
+.pick-status-pill{font-size:0.52rem;font-weight:700;padding:1px 5px;border-radius:8px;white-space:nowrap;flex-shrink:0;}
+.pill-counts{background:#d1e7dd;color:#0a4a2e;}
+.pill-drop{background:#ebebeb;color:#888;}
+.pill-mc{background:#fde8e8;color:#900;}
+.pick-score{font-size:0.82rem;font-weight:500;text-align:center;font-variant-numeric:tabular-nums;min-width:42px;color:#333;}
+.pick-score.ps-best{background:#d1e7dd;border-radius:4px;font-weight:700;color:#0a4a2e;}
+.pick-score.ps-penalty{color:#c0392b;font-size:0.72rem;}
+.pick-score.ps-empty{color:#ccc;}
+.pick-score.ps-under{color:#c0392b;font-weight:700;}
+.pick-total{font-size:0.88rem;font-weight:700;text-align:center;min-width:52px;font-variant-numeric:tabular-nums;}
+.pick-total.pt-under{color:#c0392b;}
+.pick-meta{font-size:0.7rem;color:#999;text-align:right;padding-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media(max-width:420px){
+  .picks-header-row,.pick-row{grid-template-columns:1fr 36px 36px 36px 36px 46px 72px;}
+  .pick-full-name{font-size:0.78rem;}
+  .pick-score{font-size:0.75rem;min-width:36px;}
+  .pick-total{min-width:46px;font-size:0.78rem;}
+  .pick-meta{font-size:0.62rem;}
+}
 
 /* DRAFT */
 #draft-page{padding:12px;background:var(--bg);}
@@ -850,47 +871,101 @@ function buildExpandedRow(row) {
   }
   var countingInfo = activeRound > 0 ? getCountingGolfers(participant, activeRound) : { counting: {}, dropped: null };
 
-  var html = '<div style="padding:8px 10px;">';
-  html += '<div class="golfer-grid">';
+  var penaltyScore = AUGUSTA_PAR + MC_PENALTY;
+
+  var html = '<div class="picks-expand-block">';
+
+  // Header row
+  html += '<div class="picks-header-row">';
+  html += '<span>Player</span><span>R1</span><span>R2</span><span>R3</span><span>R4</span><span>Tot</span><span style="text-align:right">Pos / Thru</span>';
+  html += '</div>';
+
+  // One row per golfer
   row.picks.forEach(function(g) {
     var espn = espnData[g] || {};
     var isMC = espn.isMC, isWD = espn.isWD, isDQ = espn.isDQ;
     var isDropped = countingInfo.dropped === g;
     var isCounting = !!countingInfo.counting[g];
-    var cardCls = 'golfer-card' + (isMC || isWD || isDQ ? ' mc' : isDropped ? ' dropped' : isCounting ? ' counting' : '');
-    var statusLabel = isMC ? 'MC' : isWD ? 'WD' : isDQ ? 'DQ' : isDropped ? 'drop' : '';
-    var penaltyScore = AUGUSTA_PAR + MC_PENALTY;
     var roundScores = [getGolferScore(g,1),getGolferScore(g,2),getGolferScore(g,3),getGolferScore(g,4)];
 
-    html += '<div class="' + cardCls + '">';
-    html += '<div class="gc-name">' + (g.length > 18 ? g.split(' ').slice(-1)[0] : g);
-    if (statusLabel) html += ' <span style="font-size:0.52rem;color:' + (statusLabel==='drop'?'#888':'#c00') + ';">' + statusLabel + '</span>';
-    html += '</div>';
-    html += '<div class="gc-scores">';
-    ['R1','R2','R3','R4'].forEach(function(lbl, i) {
-      var s = roundScores[i];
-      var cls = 'gc-round';
-      var dispStr;
-      if (s === null) { cls += ' mc'; dispStr = '\u2014'; }
-      else if (s === penaltyScore) { cls += ' worst'; dispStr = toPar(s, AUGUSTA_PAR); }
-      else { dispStr = toPar(s, AUGUSTA_PAR); }
-      var colorAttr = (s !== null && s < AUGUSTA_PAR) ? ' style="color:#c0392b"' : '';
-      html += '<span class="' + cls + '"' + colorAttr + '>' + lbl + ':' + dispStr + '</span>';
+    // Row state class
+    var rowCls = 'pick-row';
+    if (isMC || isWD || isDQ) rowCls += ' pr-mc';
+    else if (isDropped) rowCls += ' pr-dropped';
+    else if (isCounting) rowCls += ' pr-counting';
+
+    // Find best (lowest) real round score for highlight
+    var bestScore = null;
+    roundScores.forEach(function(s) {
+      if (s !== null && s !== penaltyScore) {
+        if (bestScore === null || s < bestScore) bestScore = s;
+      }
     });
+
+    // Golfer total to-par across available rounds
+    var golferTotal = 0, golferRounds = 0;
+    roundScores.forEach(function(s) { if (s !== null) { golferTotal += s; golferRounds++; } });
+    var totalCell = '\u2014';
+    var totalCls = 'pick-total';
+    if (golferRounds > 0) {
+      var gts = toPar(golferTotal, golferRounds * AUGUSTA_PAR);
+      totalCls += gts.charAt(0) === '-' ? ' pt-under' : '';
+      totalCell = gts;
+    }
+
+    // Status pill
+    var pillHtml = '';
+    if (isMC || isWD || isDQ) {
+      var lbl = isMC ? 'MC' : isWD ? 'WD' : 'DQ';
+      pillHtml = '<span class="pick-status-pill pill-mc">' + lbl + '</span>';
+    } else if (isCounting) {
+      pillHtml = '<span class="pick-status-pill pill-counts">COUNTS</span>';
+    } else if (isDropped) {
+      pillHtml = '<span class="pick-status-pill pill-drop">DROP</span>';
+    }
+
+    // Position / thru
+    var thruStr = '';
+    if (espn.thru === 18) thruStr = 'F';
+    else if (espn.thru > 0) thruStr = 'Thru ' + espn.thru;
+    var posStr = espn.position || '';
+    var metaParts = [posStr, thruStr].filter(Boolean);
+    var metaHtml = metaParts.length ? metaParts.join(' \u00B7 ') : '\u2014';
+
+    html += '<div class="' + rowCls + '">';
+
+    // Name cell
+    html += '<div class="pick-name-cell">';
+    html += '<span class="pick-full-name">' + g + '</span>';
+    html += pillHtml;
     html += '</div>';
 
-    // Thru indicator
-    var thruStr = '';
-    if (espn.thru !== undefined && espn.thru !== null) {
-      thruStr = espn.thru === 18 ? 'F' : espn.thru > 0 ? 'Thru ' + espn.thru : 'Not started';
-    }
-    var toParDisplay = espn.toPar || '';
-    var posDisplay = espn.position || '';
-    var meta = [toParDisplay, posDisplay, thruStr].filter(Boolean).join(' \u00B7 ');
-    if (meta) html += '<div class="gc-thru">' + meta + '</div>';
-    html += '</div>';
+    // R1–R4 score cells
+    roundScores.forEach(function(s) {
+      var cellCls = 'pick-score';
+      var disp;
+      if (s === null) {
+        cellCls += ' ps-empty'; disp = '\u2014';
+      } else if (s === penaltyScore) {
+        cellCls += ' ps-penalty'; disp = toPar(s, AUGUSTA_PAR);
+      } else {
+        disp = toPar(s, AUGUSTA_PAR);
+        if (s === bestScore) cellCls += ' ps-best';
+        else if (s < AUGUSTA_PAR) cellCls += ' ps-under';
+      }
+      html += '<span class="' + cellCls + '">' + disp + '</span>';
+    });
+
+    // Total
+    html += '<span class="' + totalCls + '">' + totalCell + '</span>';
+
+    // Position / thru
+    html += '<span class="pick-meta">' + metaHtml + '</span>';
+
+    html += '</div>'; // pick-row
   });
-  html += '</div></div>';
+
+  html += '</div>'; // picks-expand-block
   return html;
 }
 
